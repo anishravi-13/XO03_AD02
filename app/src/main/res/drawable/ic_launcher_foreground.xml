@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Core glyph dot -->
+    <path android:pathData="M39,54 A15,15 0 1,0 69,54 A15,15 0 1,0 39,54 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="54"
+                android:centerY="54"
+                android:gradientRadius="16"
+                android:startColor="#FF4CF2C9"
+                android:endColor="#FFA78BFA" />
+        </aapt:attr>
+    </path>
+
+    <!-- Three orbiting arcs: the "glyph" motif, echoing Echo Relay's hop pattern -->
+    <path
+        android:pathData="M34.50,26.15 A34,34 0 0,1 73.50,26.15"
+        android:strokeColor="#FF4CF2C9"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M87.87,51.04 A34,34 0 0,1 68.37,84.81"
+        android:strokeColor="#FFA78BFA"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M39.63,84.81 A34,34 0 0,1 20.13,51.04"
+        android:strokeColor="#FF4CF2C9"
+        android:strokeWidth="6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

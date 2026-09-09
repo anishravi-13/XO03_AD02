@@ -1,0 +1,12 @@
+<resources>
+    <!-- Base application theme. All real theming (colors, typography) lives in
+         ui/theme/*.kt and is applied by Compose — this XML theme only needs to
+         exist so the Activity has a valid android:theme before Compose sets content,
+         and it uses a matching dark background to avoid a white flash on cold start. -->
+    <style name="Theme.Aeroglyph" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:statusBarColor">@color/window_background</item>
+        <item name="android:navigationBarColor">@color/window_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
