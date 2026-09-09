@@ -139,7 +139,7 @@ class LongRangeTest {
 
         val hit = AudioDecoder.findSyncChirpAnyBand(pcm)
         assertNotNull(hit)
-        val symbolStart = hit!!.detection.offsetSamples + hit.band.chirpSamples()
+        val symbolStart = hit!!.detection.offsetSamples + hit.band.leadInSamples()
 
         val header = AudioDecoder.decodeHeader(
             pcm,
@@ -165,7 +165,7 @@ class LongRangeTest {
         val sentRate = RoomProfile.NORMAL.symbolRateHz
         val frame = Frame(sessionId = 0x3B, frameType = FrameType.DATA, hopCount = 1, payload = "rate".toByteArray())
         val pcm = AudioEncoder.synthesize(frame, symbolRateHz = sentRate, band = AcousticBand.ULTRASONIC)
-        val symbolStart = AcousticBand.ULTRASONIC.chirpSamples()
+        val symbolStart = AcousticBand.ULTRASONIC.leadInSamples()
 
         val correct = AudioDecoder.decodeHeaderScored(pcm, symbolStart, symbolRateHz = sentRate)
         assertNotNull("the true rate must decode", correct)

@@ -13,7 +13,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.PI
+import kotlin.math.exp
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 /**
@@ -190,6 +192,116 @@ class FrameDetectorTest {
         }
     }
 
+    /**
+     * Direct sound plus an exponentially decaying tail of reflections.
+     * [directToReverb] of 1.0 means the reverberant field carries as much
+     * energy as the direct path, which is ordinary well past critical distance.
+     */
+    private fun reverberate(pcm: ShortArray, gain: Double, directToReverb: Double, rt60Sec: Double): ShortArray {
+        val sr = ModemConfig.SAMPLE_RATE_HZ
+        val rnd = Random(3)
+        val tailLen = (rt60Sec * sr).toInt()
+        val taps = 220
+        val delays = IntArray(taps) { (rnd.nextDouble() * tailLen).toInt() + (0.004 * sr).toInt() }
+        val amps = DoubleArray(taps) { i ->
+            exp(-6.9078 * (delays[i] / sr.toDouble()) / rt60Sec) *
+                (if (rnd.nextBoolean()) 1.0 else -1.0) * rnd.nextDouble()
+        }
+        var tailEnergy = 0.0
+        for (a in amps) tailEnergy += a * a
+        val tailScale = sqrt(1.0 / directToReverb / tailEnergy)
+
+        val out = DoubleArray(pcm.size + tailLen + sr / 100)
+        for (i in pcm.indices) {
+            val x = pcm[i] * gain
+            out[i] += x
+            for (t in 0 until taps) {
+                val j = i + delays[t]
+                if (j < out.size) out[j] += x * amps[t] * tailScale
+            }
+        }
+        return ShortArray(out.size) {
+            out[it].toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+        }
+    }
+
+    /**
+     * Reverberation, not weak signal, is what actually stopped distant
+     * transmissions decoding -- the reported symptom being a receiver that
+     * plainly heard something and never produced a message.
+     *
+     * Measured against this model, attenuating the signal from 30% to 3%
+     * changed the symbol error rate not at all, while a reverberant field equal
+     * to the direct path took it from zero to 10.6% and killed every frame. The
+     * sync chirp sailed through regardless, because a matched filter integrates
+     * a whole sweep where a single 16-way tone decision has no such protection.
+     */
+    /**
+     * A room whose reverberant field equals the direct path is ordinary well
+     * past critical distance, and it is the hardest thing the receiver faces:
+     * the previous symbol's echo is as loud as the current symbol's direct
+     * sound. Neither profile is guaranteed to carry a payload through it -- at
+     * 45 symbols/sec each symbol lasts 22ms against a 900ms tail, so echoes
+     * span forty symbols -- and claiming otherwise would be dishonest.
+     *
+     * What *is* guaranteed, and what the repair layer depends on, is that the
+     * receiver never invents a message and never fails anonymously. Either the
+     * frame decodes, or the header survives and names the session so a NACK can
+     * ask for it again. Silent loss is the one outcome that would leave the
+     * mesh with no way to recover.
+     */
+    /**
+     * A moderately live room -- reverberant energy a third of the direct path,
+     * 0.9s tail -- is the realistic case for a hall at working distance, and it
+     * used to fail outright: the previous symbol's echo sat in its own tone bin
+     * while the current symbol was being measured, and the argmax picked the
+     * echo. Integrating the tail of each window and subtracting the predictable
+     * part of that echo is what carries it now.
+     */
+    @Test
+    fun `a moderately reverberant room still decodes`() {
+        for (profile in listOf(RoomProfile.NORMAL, RoomProfile.LONG_RANGE)) {
+            val wet = reverberate(
+                synthesize("echoes everywhere", profile),
+                gain = 0.1,
+                directToReverb = 3.0,
+                rt60Sec = 0.9,
+            )
+            val results = run(wet, noiseAmp = 200, interferenceHz = 180.0, interferenceAmp = 8_000)
+            assertTrue(
+                "${profile.label} lost the frame to moderate reverberation: $results",
+                results.messages().contains("echoes everywhere"),
+            )
+        }
+    }
+
+    /**
+     * When reverberation matches or exceeds the direct path -- ordinary well
+     * past critical distance in a live hall -- decoding becomes a coin flip and
+     * pretending otherwise would be dishonest. At 45 symbols/sec each symbol
+     * lasts 22ms against a 900ms tail, so echoes span forty symbols; even the
+     * twelve-symbol header, which is only six codewords, needs just two bad
+     * symbols to become unrecoverable.
+     *
+     * The guarantee that must hold regardless is that the receiver never
+     * *invents* a message. Failing loudly is recoverable through repair or a
+     * later repetition; surfacing a corrupted one is not.
+     */
+    @Test
+    fun `severe reverberation never produces a wrong message`() {
+        for (profile in listOf(RoomProfile.NORMAL, RoomProfile.LONG_RANGE)) {
+            val wet = reverberate(
+                synthesize("echoes everywhere", profile),
+                gain = 0.1,
+                directToReverb = 0.5,
+                rt60Sec = 0.9,
+            )
+            val results = run(wet, noiseAmp = 200, interferenceHz = 180.0, interferenceAmp = 8_000)
+            val wrong = results.messages().filter { it != "echoes everywhere" }
+            assertTrue("${profile.label} surfaced a corrupted message: $wrong", wrong.isEmpty())
+        }
+    }
+
     @Test
     fun `a frame arriving mid-chunk still decodes`() {
         // The gate only fires on chunk boundaries, so a chirp beginning part
@@ -245,7 +357,7 @@ class FrameDetectorTest {
         // the header must survive so the receiver can name what to repair.
         val profile = RoomProfile.NORMAL
         val pcm = synthesize("this payload gets wrecked", profile)
-        val chirp = profile.band.chirpSamples()
+        val chirp = profile.band.leadInSamples()
         val headerSamples = com.aeroglyph.app.audio.AudioDecoder.headerSampleCount(profile.symbolRateHz)
         val rnd = Random(11)
         for (i in (chirp + headerSamples) until pcm.size) {

@@ -85,9 +85,9 @@ class RecoveryFrameTest {
         val pcm = AudioEncoder.synthesize(frame)
 
         // Wreck only the payload block, leaving chirp and header untouched.
-        val chirpLength = ChirpSync.generateSyncChirp().size
+        val leadIn = ModemConfig.DEFAULT_BAND.leadInSamples()
         val headerSamples = AudioDecoder.headerSampleCount(ModemConfig.DEFAULT_SYMBOL_RATE_HZ)
-        val payloadStart = chirpLength + headerSamples
+        val payloadStart = leadIn + headerSamples
         val rnd = Random(4242)
         for (i in payloadStart until pcm.size) {
             pcm[i] = rnd.nextInt(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt() + 1).toShort()
@@ -104,9 +104,9 @@ class RecoveryFrameTest {
         val frame = Frame(sessionId = 12, frameType = FrameType.DATA, hopCount = 1, payload = "hello".toByteArray())
         val pcm = AudioEncoder.synthesize(frame)
 
-        val chirpLength = ChirpSync.generateSyncChirp().size
+        val leadIn = ModemConfig.DEFAULT_BAND.leadInSamples()
         val rnd = Random(99)
-        for (i in chirpLength until pcm.size) {
+        for (i in leadIn until pcm.size) {
             pcm[i] = rnd.nextInt(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt() + 1).toShort()
         }
 
@@ -121,11 +121,11 @@ class RecoveryFrameTest {
         val frame = Frame(sessionId = 77, frameType = FrameType.DATA, hopCount = 2, payload = "x".repeat(60).toByteArray())
         val pcm = AudioEncoder.synthesize(frame)
 
-        val chirpLength = ChirpSync.generateSyncChirp().size
+        val leadIn = ModemConfig.DEFAULT_BAND.leadInSamples()
         val headerSamples = AudioDecoder.headerSampleCount(ModemConfig.DEFAULT_SYMBOL_RATE_HZ)
-        val headerOnly = pcm.copyOfRange(0, chirpLength + headerSamples)
+        val headerOnly = pcm.copyOfRange(0, leadIn + headerSamples)
 
-        val header = AudioDecoder.decodeHeader(headerOnly, symbolStart = chirpLength)
+        val header = AudioDecoder.decodeHeader(headerOnly, symbolStart = leadIn)
         assertNotNull(header)
         assertEquals(60, header!!.payloadLength)
         assertEquals(77, header.sessionId)
@@ -144,13 +144,13 @@ class RecoveryFrameTest {
         val frame = Frame(sessionId = 21, frameType = FrameType.DATA, hopCount = 0, payload = "rate check".toByteArray())
         val sentRate = RoomProfile.NOISY.symbolRateHz
         val pcm = AudioEncoder.synthesize(frame, symbolRateHz = sentRate)
-        val chirpLength = ChirpSync.generateSyncChirp().size
+        val leadIn = ModemConfig.DEFAULT_BAND.leadInSamples()
 
-        val correct = AudioDecoder.decodeHeader(pcm, chirpLength, symbolRateHz = sentRate)
+        val correct = AudioDecoder.decodeHeader(pcm, leadIn, symbolRateHz = sentRate)
         assertNotNull("header should decode at the rate it was sent with", correct)
         assertEquals(21, correct!!.sessionId)
 
-        val result = AudioDecoder.decodeFromSymbolStart(pcm, chirpLength, symbolRateHz = sentRate)
+        val result = AudioDecoder.decodeFromSymbolStart(pcm, leadIn, symbolRateHz = sentRate)
         assertTrue(result is DecodeResult.Success)
         assertEquals("rate check", (result as DecodeResult.Success).message)
     }

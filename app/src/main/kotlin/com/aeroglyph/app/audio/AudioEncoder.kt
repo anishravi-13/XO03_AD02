@@ -61,7 +61,11 @@ object AudioEncoder {
         val endChirp = ChirpSync.generateEndChirp(sampleRate, band)
         val body = synthesizeSymbols(headerSymbols + restSymbols, sampleRate, symbolRateHz, band)
 
-        return syncChirp + body + endChirp
+        // Silence after the chirp so its full-band reverberation has decayed
+        // before the first symbol is measured -- see ModemConfig.POST_CHIRP_GUARD_MS.
+        val guard = ShortArray(ModemConfig.guardSamples(sampleRate))
+
+        return syncChirp + guard + body + endChirp
     }
 
     private fun synthesizeSymbols(

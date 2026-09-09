@@ -273,8 +273,8 @@ class FrameDetector(
             return
         }
 
-        val chirpLength = lockedBand.chirpSamples(sampleRate)
-        val symbolStartAbs = chirpStartAbs + chirpLength
+        val leadIn = lockedBand.leadInSamples(sampleRate)
+        val symbolStartAbs = chirpStartAbs + leadIn
 
         val header = lockedHeader ?: run {
             val resolved = resolveHeader(symbolStartAbs) ?: return
@@ -304,7 +304,7 @@ class FrameDetector(
         onResult(
             AudioDecoder.decodeFromSymbolStart(
                 buffer = frame,
-                symbolStart = chirpLength,
+                symbolStart = leadIn,
                 sampleRate = sampleRate,
                 symbolRateHz = lockedSymbolRate,
                 band = lockedBand,
@@ -317,7 +317,7 @@ class FrameDetector(
         // of its own; the correlation then failed (it is a reverse sweep) and
         // started a cooldown that ran into the following repetition.
         resetDetection()
-        ignoreBeforeAbs = frameEndAbs + chirpLength
+        ignoreBeforeAbs = frameEndAbs + lockedBand.chirpSamples(sampleRate)
         state = ListenState.IDLE
     }
 
