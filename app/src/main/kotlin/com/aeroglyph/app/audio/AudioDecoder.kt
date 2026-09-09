@@ -11,6 +11,9 @@ data class FrameHeader(
 /** A located sync chirp, together with the band its template belonged to. */
 data class BandDetection(val band: AcousticBand, val detection: ChirpDetection)
 
+/** A decoded header plus how cleanly its tones resolved. See [AudioDecoder.decodeHeaderScored]. */
+data class ScoredHeader(val header: FrameHeader, val confidence: Double)
+
 /** What came out of trying to decode one frame from a PCM buffer. */
 sealed class DecodeResult {
     class Success(
@@ -122,12 +125,52 @@ object AudioDecoder {
         sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
         symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
         band: AcousticBand = ModemConfig.DEFAULT_BAND,
-    ): FrameHeader? {
+    ): FrameHeader? = decodeHeaderScored(buffer, symbolStart, sampleRate, symbolRateHz, band)?.header
+
+    /**
+     * As [decodeHeader], but also reports how cleanly the header's tones
+     * resolved -- the mean ratio between the winning Goertzel bin and the
+     * runner-up, across the twelve header symbols.
+     *
+     * This exists because "the FEC accepted it" is a much weaker statement than
+     * it looks. Extended Hamming(8,4) treats 144 of the 256 possible bytes as
+     * valid-or-correctable, so a block of six codewords full of noise is
+     * accepted about 3% of the time. A receiver that tries several candidate
+     * symbol rates and takes the first one the FEC tolerates will therefore
+     * lock onto a phantom header roughly one time in ten, consume the lock, and
+     * silently discard a frame that was arriving perfectly well.
+     *
+     * Confidence separates the cases on physics rather than luck: at the rate
+     * the sender actually used, each symbol window contains one steady tone and
+     * the winning bin towers over the rest. At a wrong rate the window straddles
+     * symbol boundaries, energy smears across bins, and the margin collapses
+     * towards 1. The caller picks the highest-confidence candidate instead of
+     * the first plausible one.
+     */
+    fun decodeHeaderScored(
+        buffer: ShortArray,
+        symbolStart: Int,
+        sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
+        symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
+    ): ScoredHeader? {
         val samplesPerSymbol = ModemConfig.samplesPerSymbol(symbolRateHz, sampleRate)
         val headerSymbolCount = AudioEncoder.HEADER_SYMBOL_COUNT
         if (symbolStart < 0 || symbolStart + headerSymbolCount * samplesPerSymbol > buffer.size) return null
 
-        val symbols = decodeSymbols(buffer, symbolStart, headerSymbolCount, samplesPerSymbol, sampleRate, band)
+        var marginSum = 0.0
+        val symbols = IntArray(headerSymbolCount) { s ->
+            val (bin, margin) = strongestBinScored(
+                buffer,
+                symbolStart + s * samplesPerSymbol,
+                samplesPerSymbol,
+                sampleRate,
+                band,
+            )
+            marginSum += margin
+            bin
+        }
+
         val plain = decodeBlock(symbolsToBytes(symbols)) ?: return null
 
         val payloadLength = plain[0].toInt() and 0xFF
@@ -137,7 +180,10 @@ object AudioDecoder {
 
         val sessionId = plain[1].toInt() and 0xFF
         val (frameType, hopCount) = Frame.parseTypeAndHop(plain[2].toInt() and 0xFF)
-        return FrameHeader(payloadLength, sessionId, frameType, hopCount)
+        return ScoredHeader(
+            header = FrameHeader(payloadLength, sessionId, frameType, hopCount),
+            confidence = marginSum / headerSymbolCount,
+        )
     }
 
     /**
@@ -248,17 +294,36 @@ object AudioDecoder {
         length: Int,
         sampleRate: Int,
         band: AcousticBand,
-    ): Int {
+    ): Int = strongestBinScored(buffer, offset, length, sampleRate, band).first
+
+    /**
+     * The winning tone bin, plus how far it stands above the runner-up.
+     *
+     * The margin is capped because one exceptionally clean symbol should not be
+     * able to vouch for eleven poor ones when these are averaged.
+     */
+    private fun strongestBinScored(
+        buffer: ShortArray,
+        offset: Int,
+        length: Int,
+        sampleRate: Int,
+        band: AcousticBand,
+    ): Pair<Int, Double> {
         var bestBin = 0
-        var bestMagnitude = -1.0
+        var best = -1.0
+        var second = -1.0
         for (bin in 0 until ModemConfig.TONE_COUNT) {
             val magnitude = DspUtil.goertzelMagnitude(buffer, offset, length, sampleRate, band.toneFrequencyHz(bin))
-            if (magnitude > bestMagnitude) {
-                bestMagnitude = magnitude
+            if (magnitude > best) {
+                second = best
+                best = magnitude
                 bestBin = bin
+            } else if (magnitude > second) {
+                second = magnitude
             }
         }
-        return bestBin
+        val margin = if (second <= 0.0) MAX_SYMBOL_MARGIN else (best / second).coerceAtMost(MAX_SYMBOL_MARGIN)
+        return bestBin to margin
     }
 
     private fun symbolsToBytes(symbols: IntArray): ByteArray {
@@ -283,4 +348,17 @@ object AudioDecoder {
      * seen at all.
      */
     const val DEFAULT_CHIRP_THRESHOLD = 0.28
+
+    /** Ceiling on one symbol's bin-dominance ratio, so a single clean symbol cannot carry an average. */
+    private const val MAX_SYMBOL_MARGIN = 10.0
+
+    /**
+     * Least symbol-dominance a header must show before it is believed at all.
+     *
+     * A header decoded at the wrong symbol rate smears energy across bins and
+     * lands near 1.0; a correctly-aligned one is several times its runner-up.
+     * Set low enough to keep weak-but-real signals, high enough that pure noise
+     * which happens to satisfy the FEC is still thrown out.
+     */
+    const val MIN_HEADER_CONFIDENCE = 1.6
 }

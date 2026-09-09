@@ -150,6 +150,42 @@ class LongRangeTest {
         assertEquals("found me".length, header.payloadLength)
     }
 
+    /**
+     * The receiver tries several symbol rates against the header because
+     * nothing on the wire announces which one the sender used. That search is
+     * only safe if a wrong rate can be told from the right one, and "the FEC
+     * accepted it" cannot do that job: extended Hamming(8,4) treats 144 of 256
+     * bytes as valid-or-correctable, so a six-codeword header made of noise
+     * passes about 3% of the time. Symbol confidence is what separates them.
+     */
+    @Test
+    fun `the correct symbol rate resolves far more confidently than the wrong ones`() {
+        val sentRate = RoomProfile.NORMAL.symbolRateHz
+        val frame = Frame(sessionId = 0x3B, frameType = FrameType.DATA, hopCount = 1, payload = "rate".toByteArray())
+        val pcm = AudioEncoder.synthesize(frame, symbolRateHz = sentRate, band = AcousticBand.ULTRASONIC)
+        val symbolStart = AcousticBand.ULTRASONIC.chirpSamples()
+
+        val correct = AudioDecoder.decodeHeaderScored(pcm, symbolStart, symbolRateHz = sentRate)
+        assertNotNull("the true rate must decode", correct)
+        assertEquals(0x3B, correct!!.header.sessionId)
+        assertTrue(
+            "a correctly aligned header should be well clear of the accept threshold, was ${correct.confidence}",
+            correct.confidence > AudioDecoder.MIN_HEADER_CONFIDENCE,
+        )
+
+        for (wrongRate in RoomProfile.entries.map { it.symbolRateHz }.filter { it != sentRate }) {
+            val scored = AudioDecoder.decodeHeaderScored(pcm, symbolStart, symbolRateHz = wrongRate)
+            // A wrong rate may or may not satisfy the FEC; what must never
+            // happen is it looking *more* convincing than the true one.
+            if (scored != null) {
+                assertTrue(
+                    "rate $wrongRate scored ${scored.confidence} vs ${correct.confidence} for the true rate",
+                    scored.confidence < correct.confidence,
+                )
+            }
+        }
+    }
+
     @Test
     fun `the ring buffer is sized for the slowest profile's largest frame`() {
         // A long-range frame that outgrew the receiver's buffer would decode up
