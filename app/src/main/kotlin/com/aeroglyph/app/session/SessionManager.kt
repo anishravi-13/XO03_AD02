@@ -46,6 +46,14 @@ class SessionManager(private val random: Random = Random.Default) {
         return isNew
     }
 
+    /**
+     * Read-only check, for deciding whether to chase a session we heard about
+     * but never received -- a repair request or a beacon we might want to
+     * answer. Unlike [markSeenIfNew] this records nothing.
+     */
+    @Synchronized
+    fun hasSeen(sessionId: Int): Boolean = sessionId in seen
+
     @Synchronized
     fun reset() = seen.clear()
 

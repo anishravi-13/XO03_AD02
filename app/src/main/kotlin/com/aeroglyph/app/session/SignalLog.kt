@@ -5,7 +5,31 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class LogDirection { SENT, RECEIVED, RELAYED }
+/**
+ * What a log row represents. The recovery entries exist so a demo can point
+ * at the moment a repair or a catch-up actually fired, rather than asking
+ * anyone to take it on trust.
+ */
+enum class LogDirection(val label: String) {
+    SENT("SENT"),
+    RECEIVED("DIRECT"),
+    RELAYED("VIA RELAY"),
+
+    /** We noticed a damaged frame and asked for it by name. */
+    REPAIR_REQUESTED("REPAIR ASKED"),
+
+    /** We held a message someone else had damaged, and re-sent it. */
+    REPAIR_ANSWERED("REPAIR SENT"),
+
+    /** We arrived late and asked the room what we had missed. */
+    CATCH_UP_REQUESTED("CATCH-UP ASKED"),
+
+    /** We answered a late arrival. */
+    CATCH_UP_ANSWERED("CATCH-UP SENT"),
+
+    /** A message that reached us through repair or catch-up rather than live. */
+    RECOVERED("RECOVERED"),
+}
 
 data class SignalLogEntry(
     val id: Long,

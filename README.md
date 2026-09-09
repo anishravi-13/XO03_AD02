@@ -29,6 +29,16 @@ Every decoded message leaves behind a generated vector mark, drawn live on a Com
 
 A room full of phones ends up holding a family of marks that are clearly siblings and clearly individual. That is the demo moment.
 
+### 3. Self-healing delivery — the two surprise challenges
+
+Both challenges reduce to the same question: *somebody is missing something -- who answers, and when?* So they are answered by one gossip layer rather than two bolted-on features.
+
+**Partial reception.** The header block is FEC-protected separately from the payload, so a frame damaged in transit usually still yields a readable header. That is the difference between "something went wrong" and "session 6D is damaged" -- and the second one can be acted on. A receiver in that state emits a `NACK` naming the exact session, and any device holding that message re-sends it. The original sender has no special role, so recovery works even if the sender has walked out of range.
+
+**Dynamic group.** A device that opens the Listen screen immediately asks the room `REQUEST(latest)`. Anyone holding a message answers. Devices holding a message also emit a periodic `BEACON` advertising the session they have, so a late arrival whose request went unheard still learns something exists and asks for it by name. Either way a phone that arrives after the broadcast ends catches up on its own, with nobody touching the sender.
+
+**What stops the shouting match.** Every answer waits a random 0.5-1.8s and is cancelled if a neighbour is heard answering first, and the same session will not be re-served within a cooldown. Twenty phones holding the message produce roughly one answer, not twenty.
+
 ---
 
 ## The rest of the design
@@ -66,7 +76,7 @@ On Windows use `gradlew.bat`. If `./gradlew test` complains about the JDK, point
 ./gradlew test -Dorg.gradle.java.home="C:\Program Files\Android\Android Studio\jbr"
 ```
 
-> **Verified.** This project has been built and tested end-to-end on a real toolchain (JDK 17, Android SDK Platform 35): `./gradlew test` passes all 16 JVM unit tests (Crc32Test, FecCodecTest — including the exhaustive single/double-bit-flip cases — and AudioModemRoundTripTest, noisy-channel cases included), and `./gradlew assembleDebug` produces a working, installable APK. The Compose UI, theme, and every screen also compile cleanly with zero warnings. What has *not* been verified is behavior on a physical device — the multi-device Echo Relay demo, real microphone/speaker characteristics, and permission-flow UX all still want a real phone.
+> **Verified.** Built and tested on a real toolchain (JDK 17, Android SDK Platform 35): `./gradlew test` passes all 24 JVM unit tests and `./gradlew assembleDebug` produces an installable APK. What is *not* yet verified is on-device radio behaviour -- the multi-device demos below, real microphone and speaker response at 17-19.5kHz, and how far the range actually stretches in a given room.
 
 ---
 
@@ -92,6 +102,24 @@ This is the one worth showing a judge.
 6. Open the **Signal log** on each device to show the hop path.
 
 To show loop prevention: add a fourth device D in range of both A and B. D receives A's original, and then ignores B's relay of the same session instead of relaying it onward.
+
+### Surprise challenge 1 — partial reception repairs itself
+
+1. Two devices, A broadcasting and B listening, far enough apart that reception is marginal (or play music between them).
+2. When B catches a frame whose header survives but whose payload does not, it shows **"Damaged frame — requesting repair"** and its Signal log gains a red `REPAIR ASKED` row.
+3. A (or any third device that already has the message) answers, and B ends up showing the message with a **RECOVERED** badge.
+4. The point to make out loud: nobody pressed anything on A. Point at A's `REQUESTS ANSWERED` counter.
+
+To prove the sender is not special, do it again with a third device C holding the message and A's app closed. B still recovers -- from C.
+
+### Surprise challenge 2 — a device that joins late catches up
+
+1. A broadcasts a message to B. Wait for it to finish completely.
+2. **Now** open the app on C, which was not running during the broadcast, and tap **Listen**.
+3. C asks the room automatically -- **"Asking the room for the latest"** -- and within a few seconds displays the message with a **RECOVERED** badge, having never heard the original broadcast.
+4. Again: nothing was re-triggered on A. Whichever of A or B is closest answers.
+
+If C is out of earshot of everyone at the moment it asks, it stays quiet and waits: any holder emits a beacon every 20 seconds, and C will ask again as soon as it hears one.
 
 ### Robustness checks
 
@@ -123,7 +151,9 @@ Text ─► UTF-8 ─► [len | session | type+TTL]  +  payload  +  CRC-32
                           FEC correct ─► CRC verify ─► deliver / drop
 ```
 
-**Frame layout** — header is 3 bytes (`payload length`, `session ID`, `frame type << 6 | hop count`), then payload, then CRC-32. The header is sent as its own fixed-size FEC block *first*, so a receiver can decode just those 12 symbols, learn the payload length, and only then know how many more symbols to listen for.
+**Frame layout** — header is 3 bytes (`payload length`, `session ID`, `frame type << 5 | hop count`), then payload, then CRC-32. The header is sent as its own fixed-size FEC block *first*, so a receiver can decode just those 12 symbols, learn the payload length, and only then know how many more symbols to listen for. That staging is also what makes targeted repair possible: a frame whose payload is destroyed still usually yields a readable header, so the receiver knows exactly which session to ask for.
+
+**Frame types** (3 bits): `DATA`, `RELAY` (mesh rebroadcast), `ACK` (confirmation mode), `NACK` (repair request), `REQUEST` (catch-up), `BEACON` (I hold session X), `ANSWER` (a message re-sent to satisfy a request).
 
 **Source map**
 
@@ -141,6 +171,7 @@ Text ─► UTF-8 ─► [len | session | type+TTL]  +  payload  +  CRC-32
 | `playback/Listener.kt` | AudioRecord, VAD gate, throttled decode attempts |
 | `playback/Feedback.kt` | Haptics + synthesized confirmation chime |
 | `session/SessionManager.kt` | Dedupe / relay-loop prevention |
+| `session/MessageStore.kt` | What we hold, plus who answers a repair/catch-up request and when |
 | `session/SignalLog.kt` | In-memory history and decode stats |
 | `ui/AeroglyphViewModel.kt` | Where decode events become relay, ACK, log, feedback |
 | `ui/theme/` | Palette, type scale, shapes |
@@ -151,11 +182,19 @@ Text ─► UTF-8 ─► [len | session | type+TTL]  +  payload  +  CRC-32
 
 ## Deliberate deviations from the brief
 
-Both were taken under the brief's own tie-breaker — *when a constraint and a nice-to-have conflict, favour reliability*.
+All taken under the brief's own tie-breaker — *when a constraint and a nice-to-have conflict, favour reliability*.
 
 1. **The header and CRC are FEC-protected too.** Read literally, the spec puts the header before the FEC stage and the CRC after it, leaving both bare on the wire. But a single flipped bit in the length byte desynchronises the entire parse, and a flipped bit in the CRC rejects a message that arrived perfectly. Everything is protected uniformly instead.
 
 2. **Hamming(8,4) SECDED instead of Hamming(7,4).** The spec asks `decode()` to return `null` on an uncorrectable error, but plain (7,4) has no way to *detect* a double-bit error — it silently miscorrects into a wrong value. Adding one overall parity bit per nibble buys guaranteed double-error *detection*, which is what makes that `null` mean anything. It also happens to make each nibble map to exactly one byte, so the modulator needs no bit-packing at all. `FecCodecTest` verifies both properties exhaustively.
+
+3. **The chirp sweeps 16.5-19.5kHz, not 1.8-19.5kHz.** The spec pins the wider sweep, but it broke reception outright, in two separate ways. The energy gate that decides "is a transmission happening" watches our own 16 tone bins, and a chirp spending its first 180ms below 17kHz is invisible to it -- the receiver only woke for the last sliver of the chirp, far too late to correlate against the template. Separately, correlation peak width goes as 1/bandwidth: a 17.7kHz sweep has a ~2.7-sample peak, narrow enough that any search step coarse enough to run in real time steps straight over it. Narrowing to 3kHz widens the peak to ~16 samples and puts the whole protocol inside the near-ultrasonic band, which is where it was always supposed to live.
+
+4. **The receiver never discards audio on silence.** An earlier version cleared its buffer whenever input dropped below a threshold, which threw away the start of every transmission -- the sync chirp itself -- right up to the moment the gate opened. Capture now runs continuously into a ring buffer; the gate only decides *when to look*, never *what to keep*.
+
+5. **The trigger threshold adapts rather than being a fixed number.** Microphone gain varies enormously across devices, and `UNPROCESSED` deliberately disables the AGC that would otherwise hide that. The floor now tracks measured background level and fires on a rise above it. The Listen screen shows SIGNAL, FLOOR and MARGIN live, so a room that is not working can be diagnosed by looking rather than guessing.
+
+6. **Room profiles auto-negotiate.** Nothing on the wire announces which symbol rate the sender used, so a receiver set to a different profile would decode nothing with no indication why. The receiver now tries each profile's rate against the 12-symbol header and keeps whichever one its FEC agrees with -- no handshake, which the brief forbids, just three cheap attempts.
 
 ---
 

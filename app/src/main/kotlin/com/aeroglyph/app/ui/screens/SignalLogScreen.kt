@@ -151,7 +151,7 @@ private fun LogRow(entry: SignalLogEntry, receiptId: Int) {
             Row {
                 DataValue(timeFormat.format(Date(entry.timestampMs)), color = extras.textTertiary)
                 Spacer(Modifier.size(10.dp))
-                DataValue(directionLabel(entry), color = directionColor(entry))
+                DataValue(entry.direction.label, color = directionColor(entry))
                 Spacer(Modifier.size(10.dp))
                 DataValue("%02X".format(entry.sessionId), color = extras.textTertiary)
             }
@@ -159,15 +159,18 @@ private fun LogRow(entry: SignalLogEntry, receiptId: Int) {
     }
 }
 
+/**
+ * Colour carries the category: what we sent, what the mesh carried, and what
+ * the recovery layer had to go and fetch.
+ */
 @Composable
 private fun directionColor(entry: SignalLogEntry) = when (entry.direction) {
     LogDirection.SENT -> MaterialTheme.colorScheme.primary
     LogDirection.RELAYED -> MaterialTheme.colorScheme.secondary
     LogDirection.RECEIVED -> LocalAeroglyphExtras.current.textTertiary
-}
-
-private fun directionLabel(entry: SignalLogEntry): String = when (entry.direction) {
-    LogDirection.SENT -> "SENT"
-    LogDirection.RELAYED -> "VIA RELAY"
-    LogDirection.RECEIVED -> "DIRECT"
+    LogDirection.REPAIR_REQUESTED,
+    LogDirection.CATCH_UP_REQUESTED -> MaterialTheme.colorScheme.error
+    LogDirection.REPAIR_ANSWERED,
+    LogDirection.CATCH_UP_ANSWERED,
+    LogDirection.RECOVERED -> MaterialTheme.colorScheme.secondary
 }

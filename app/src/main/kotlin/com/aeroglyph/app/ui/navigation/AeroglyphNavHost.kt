@@ -63,7 +63,13 @@ fun AeroglyphRoot(
     val progress by viewModel.transmitProgress.collectAsState()
     val binEnergies by viewModel.spectrumEnergies.collectAsState()
     val listening by viewModel.isListening.collectAsState()
-    val signalPresent by viewModel.signalPresent.collectAsState()
+    val listenState by viewModel.listenState.collectAsState()
+    val recoveryState by viewModel.recoveryState.collectAsState()
+    val recoveredViaRecovery by viewModel.recoveredViaRecovery.collectAsState()
+    val peakEnergy by viewModel.peakBandEnergy.collectAsState()
+    val noiseFloor by viewModel.noiseFloor.collectAsState()
+    val audioSource by viewModel.audioSourceName.collectAsState()
+    val requestsAnswered by viewModel.requestsAnswered.collectAsState()
     val received by viewModel.lastReceived.collectAsState()
     val duplicate by viewModel.duplicateNotice.collectAsState()
     val listenerError by viewModel.listenerError.collectAsState()
@@ -79,6 +85,13 @@ fun AeroglyphRoot(
     LaunchedEffect(permissionGranted, screen) {
         if (permissionGranted && screen != Screen.MODE_SELECT) {
             viewModel.startListening()
+        }
+        // Arriving at the Listen screen is exactly the "device joins late"
+        // case: ask the room what has already been said, rather than sitting
+        // silently waiting for a broadcast that has been and gone.
+        if (permissionGranted && screen == Screen.RECEIVER) {
+            delay(700) // let capture settle before we talk over it
+            viewModel.requestCatchUp()
         }
     }
 
@@ -128,6 +141,7 @@ fun AeroglyphRoot(
                     binEnergies = binEnergies,
                     confirmedCount = confirmed.size,
                     relayInFlight = relayInFlight,
+                    requestsAnswered = requestsAnswered,
                     onDraftChange = viewModel::onDraftChanged,
                     onBroadcast = viewModel::broadcast,
                     onCancel = viewModel::cancelTransmission,
@@ -136,6 +150,7 @@ fun AeroglyphRoot(
                     onRelayTtlChange = viewModel::setRelayTtl,
                     onConfirmationToggle = viewModel::setConfirmationMode,
                     onAccessibilityToggle = viewModel::setAccessibilityPulse,
+                    onAutoRecoveryToggle = viewModel::setAutoRecovery,
                     onShowConfirmationInfo = { showConfirmationInfo = true },
                 )
             }
@@ -147,12 +162,17 @@ fun AeroglyphRoot(
                 ReceiverScreen(
                     received = received,
                     receiptId = viewModel.receiptId,
-                    listening = listening,
-                    signalPresent = signalPresent,
+                    listenState = listenState,
+                    recoveryState = recoveryState,
+                    recoveredViaRecovery = recoveredViaRecovery,
                     relayInFlight = relayInFlight,
                     binEnergies = binEnergies,
+                    peakEnergy = peakEnergy,
+                    noiseFloor = noiseFloor,
+                    audioSource = audioSource,
                     duplicateSessionId = duplicate,
                     onClear = viewModel::clearReceived,
+                    onRequestCatchUp = { viewModel.requestCatchUp() },
                 )
             }
 

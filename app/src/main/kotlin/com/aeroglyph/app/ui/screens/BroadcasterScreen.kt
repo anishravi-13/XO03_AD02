@@ -60,6 +60,7 @@ fun BroadcasterScreen(
     binEnergies: DoubleArray,
     confirmedCount: Int,
     relayInFlight: Boolean,
+    requestsAnswered: Int,
     onDraftChange: (String) -> Unit,
     onBroadcast: () -> Unit,
     onCancel: () -> Unit,
@@ -68,6 +69,7 @@ fun BroadcasterScreen(
     onRelayTtlChange: (Int) -> Unit,
     onConfirmationToggle: (Boolean) -> Unit,
     onAccessibilityToggle: (Boolean) -> Unit,
+    onAutoRecoveryToggle: (Boolean) -> Unit,
     onShowConfirmationInfo: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -194,6 +196,36 @@ fun BroadcasterScreen(
             }
         }
 
+        // ── Recovery served ────────────────────────────────────────────────
+        // Proof the repair/catch-up layer is doing something: this device has
+        // re-sent the message to phones that missed it or arrived late, with
+        // nobody pressing anything.
+        AnimatedVisibility(visible = requestsAnswered > 0, enter = fadeIn(), exit = fadeOut()) {
+            Column {
+                Panel {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            DataLabel("REQUESTS ANSWERED")
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                requestsAnswered.toString().padStart(2, '0'),
+                                style = DataType.large,
+                                color = MaterialTheme.colorScheme.secondary,
+                            )
+                        }
+                        Text(
+                            "Devices that missed the broadcast or joined late " +
+                                "were served automatically.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = extras.textTertiary,
+                            modifier = Modifier.weight(1.4f),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+
         // ── Primary action ──────────────────────────────────────────────────
         if (isTransmitting) {
             SecondaryButton(
@@ -252,6 +284,13 @@ fun BroadcasterScreen(
                 }
             }
 
+            ToggleRow(
+                title = "Auto repair & catch-up",
+                subtitle = "Re-send on request, and answer devices that join late",
+                checked = settings.autoRecovery,
+                onCheckedChange = onAutoRecoveryToggle,
+                iconId = Glyphs.zap,
+            )
             ToggleRow(
                 title = "Confirmation mode",
                 subtitle = "Receivers send a short acoustic ACK back",

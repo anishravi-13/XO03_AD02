@@ -65,6 +65,7 @@ object Glyphs {
     val shieldCheck = R.drawable.ic_shield_check
     val copy = R.drawable.ic_copy
     val check = R.drawable.ic_check
+    val zap = R.drawable.ic_zap
 }
 
 @Composable
