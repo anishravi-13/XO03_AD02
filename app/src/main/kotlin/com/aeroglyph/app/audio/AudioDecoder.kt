@@ -8,6 +8,9 @@ data class FrameHeader(
     val hopCount: Int,
 )
 
+/** A located sync chirp, together with the band its template belonged to. */
+data class BandDetection(val band: AcousticBand, val detection: ChirpDetection)
+
 /** What came out of trying to decode one frame from a PCM buffer. */
 sealed class DecodeResult {
     class Success(
@@ -64,13 +67,38 @@ object AudioDecoder {
         threshold: Double = DEFAULT_CHIRP_THRESHOLD,
         searchStride: Int = 1,
         maxSearchOffset: Int = Int.MAX_VALUE,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): ChirpDetection? = ChirpSync.findChirp(
         buffer = buffer,
-        template = ChirpSync.generateSyncChirp(sampleRate),
+        template = ChirpSync.generateSyncChirp(sampleRate, band),
         threshold = threshold,
         maxSearchOffset = maxSearchOffset,
         searchStride = searchStride,
     )
+
+    /**
+     * Correlates every band's template and keeps the strongest match.
+     *
+     * The bands' sweeps are disjoint, so a genuine chirp scores well against
+     * its own template and near zero against the other -- which makes the
+     * chirp itself the band announcement, and means a receiver never has to be
+     * told which mode the sender chose.
+     */
+    fun findSyncChirpAnyBand(
+        buffer: ShortArray,
+        sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
+        threshold: Double = DEFAULT_CHIRP_THRESHOLD,
+        searchStride: Int = 1,
+        maxSearchOffset: Int = Int.MAX_VALUE,
+    ): BandDetection? {
+        var best: BandDetection? = null
+        for (band in AcousticBand.entries) {
+            val hit = findSyncChirp(buffer, sampleRate, threshold, searchStride, maxSearchOffset, band)
+                ?: continue
+            if (best == null || hit.score > best.detection.score) best = BandDetection(band, hit)
+        }
+        return best
+    }
 
     /** Samples the header block occupies at a given symbol rate. */
     fun headerSampleCount(symbolRateHz: Double, sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ): Int =
@@ -93,13 +121,14 @@ object AudioDecoder {
         symbolStart: Int,
         sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
         symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): FrameHeader? {
         val samplesPerSymbol = ModemConfig.samplesPerSymbol(symbolRateHz, sampleRate)
         val headerSymbolCount = AudioEncoder.HEADER_SYMBOL_COUNT
         if (symbolStart < 0 || symbolStart + headerSymbolCount * samplesPerSymbol > buffer.size) return null
 
-        val symbols = decodeSymbols(buffer, symbolStart, headerSymbolCount, samplesPerSymbol, sampleRate)
-        val plain = FecCodec.decode(symbolsToBytes(symbols)) ?: return null
+        val symbols = decodeSymbols(buffer, symbolStart, headerSymbolCount, samplesPerSymbol, sampleRate, band)
+        val plain = decodeBlock(symbolsToBytes(symbols)) ?: return null
 
         val payloadLength = plain[0].toInt() and 0xFF
         // A nonsensical length must never drive an allocation or a read past
@@ -120,20 +149,21 @@ object AudioDecoder {
         symbolStart: Int,
         sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
         symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): DecodeResult {
         val samplesPerSymbol = ModemConfig.samplesPerSymbol(symbolRateHz, sampleRate)
         val headerSymbolCount = AudioEncoder.HEADER_SYMBOL_COUNT
         if (symbolStart + headerSymbolCount * samplesPerSymbol > buffer.size) return DecodeResult.Incomplete
 
-        val header = decodeHeader(buffer, symbolStart, sampleRate, symbolRateHz)
+        val header = decodeHeader(buffer, symbolStart, sampleRate, symbolRateHz, band)
             ?: return DecodeResult.CrcFailed
 
         val restSymbolCount = (header.payloadLength + ModemConfig.CRC_BYTES) * 4
         val restStart = symbolStart + headerSymbolCount * samplesPerSymbol
         if (restStart + restSymbolCount * samplesPerSymbol > buffer.size) return DecodeResult.Incomplete
 
-        val restSymbols = decodeSymbols(buffer, restStart, restSymbolCount, samplesPerSymbol, sampleRate)
-        val restPlain = FecCodec.decode(symbolsToBytes(restSymbols))
+        val restSymbols = decodeSymbols(buffer, restStart, restSymbolCount, samplesPerSymbol, sampleRate, band)
+        val restPlain = decodeBlock(symbolsToBytes(restSymbols))
             ?: return DecodeResult.PartialReception(header.sessionId, header.frameType, header.hopCount)
 
         val payloadBytes = restPlain.copyOfRange(0, header.payloadLength)
@@ -168,8 +198,9 @@ object AudioDecoder {
         symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
         chirpThreshold: Double = DEFAULT_CHIRP_THRESHOLD,
         chirpSearchStride: Int = 1,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): DecodeResult {
-        val template = ChirpSync.generateSyncChirp(sampleRate)
+        val template = ChirpSync.generateSyncChirp(sampleRate, band)
         val detection = ChirpSync.findChirp(
             buffer = buffer,
             template = template,
@@ -182,6 +213,7 @@ object AudioDecoder {
             symbolStart = detection.offsetSamples + template.size,
             sampleRate = sampleRate,
             symbolRateHz = symbolRateHz,
+            band = band,
         )
     }
 
@@ -191,18 +223,36 @@ object AudioDecoder {
         offset: Int,
         length: Int,
         sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): DoubleArray = DoubleArray(ModemConfig.TONE_COUNT) { bin ->
-        DspUtil.goertzelMagnitude(buffer, offset, length, sampleRate, ModemConfig.toneFrequencyHz(bin))
+        DspUtil.goertzelMagnitude(buffer, offset, length, sampleRate, band.toneFrequencyHz(bin))
     }
 
-    private fun decodeSymbols(buffer: ShortArray, start: Int, count: Int, samplesPerSymbol: Int, sampleRate: Int): IntArray =
-        IntArray(count) { s -> strongestBin(buffer, start + s * samplesPerSymbol, samplesPerSymbol, sampleRate) }
+    /** Deinterleave then FEC-decode: the inverse of [AudioEncoder.encodeBlock]. */
+    private fun decodeBlock(wire: ByteArray): ByteArray? = FecCodec.decode(Interleaver.deinterleave(wire))
 
-    private fun strongestBin(buffer: ShortArray, offset: Int, length: Int, sampleRate: Int): Int {
+    private fun decodeSymbols(
+        buffer: ShortArray,
+        start: Int,
+        count: Int,
+        samplesPerSymbol: Int,
+        sampleRate: Int,
+        band: AcousticBand,
+    ): IntArray = IntArray(count) { s ->
+        strongestBin(buffer, start + s * samplesPerSymbol, samplesPerSymbol, sampleRate, band)
+    }
+
+    private fun strongestBin(
+        buffer: ShortArray,
+        offset: Int,
+        length: Int,
+        sampleRate: Int,
+        band: AcousticBand,
+    ): Int {
         var bestBin = 0
         var bestMagnitude = -1.0
         for (bin in 0 until ModemConfig.TONE_COUNT) {
-            val magnitude = DspUtil.goertzelMagnitude(buffer, offset, length, sampleRate, ModemConfig.toneFrequencyHz(bin))
+            val magnitude = DspUtil.goertzelMagnitude(buffer, offset, length, sampleRate, band.toneFrequencyHz(bin))
             if (magnitude > bestMagnitude) {
                 bestMagnitude = magnitude
                 bestBin = bin
@@ -220,11 +270,17 @@ object AudioDecoder {
 
     /**
      * Correlation score a candidate must beat to count as the sync chirp.
-     * Lowered from the original 0.6: a real room adds reverb and the mic's
-     * response across 16.5-19.5kHz is not flat, so a genuine chirp routinely
-     * scores in the 0.5-0.7 range rather than near 1.0. A false positive here
-     * is cheap (the header FEC rejects it a few milliseconds later); a missed
-     * chirp means the message is never seen at all.
+     *
+     * Lowered twice, for two different reasons. First from the original 0.6 to
+     * 0.45: a real room adds reverb and the mic's response across the sweep is
+     * not flat, so a genuine chirp scores 0.5-0.7 rather than near 1.0. Then to
+     * 0.28 for long range, where the direct path is weak relative to the
+     * reverberant tail and correlation scores fall further still.
+     *
+     * The asymmetry justifies being generous: a false positive costs a few
+     * milliseconds of wasted Goertzel work and is thrown out by the header FEC
+     * immediately afterwards, while a missed chirp means the message is never
+     * seen at all.
      */
-    const val DEFAULT_CHIRP_THRESHOLD = 0.45
+    const val DEFAULT_CHIRP_THRESHOLD = 0.28
 }

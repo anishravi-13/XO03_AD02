@@ -13,10 +13,16 @@ import kotlin.math.sin
  * then know how many more symbols to listen for -- classic
  * "self-describing-length" framing.
  *
- * Because [FecCodec] encodes each 4-bit nibble into a full 8-bit codeword
- * byte, and our alphabet is exactly 16-FSK (4 bits/symbol), every encoded
- * byte maps to precisely two symbols with zero padding -- no bit-packing
- * needed anywhere in this pipeline.
+ * Each block is FEC-encoded and then bit-interleaved (see [Interleaver]) before
+ * being cut into 4-bit FSK symbols. The interleave is what makes the FEC worth
+ * having on this channel: it guarantees the bits of any one codeword land in
+ * different symbols, so losing a symbol costs one correctable bit per codeword
+ * rather than destroying a codeword outright.
+ *
+ * Because [FecCodec] encodes each 4-bit nibble into a full 8-bit codeword byte,
+ * and our alphabet is exactly 16-FSK (4 bits/symbol), every encoded byte maps
+ * to precisely two symbols with zero padding -- no bit-packing needed anywhere
+ * in this pipeline.
  */
 object AudioEncoder {
 
@@ -31,6 +37,9 @@ object AudioEncoder {
         return symbols
     }
 
+    /** FEC then interleave: the exact byte sequence that goes on the wire for one block. */
+    internal fun encodeBlock(plain: ByteArray): ByteArray = Interleaver.interleave(FecCodec.encode(plain))
+
     /** Number of FSK symbols the header block always occupies, regardless of payload length. */
     val HEADER_SYMBOL_COUNT = ModemConfig.HEADER_BYTES * 2 /* FEC bytes-out */ * 2 /* symbols-per-byte */
 
@@ -38,29 +47,35 @@ object AudioEncoder {
         frame: Frame,
         sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
         symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): ShortArray {
         val plaintext = frame.toPlaintextBytes()
         val headerPlain = plaintext.copyOfRange(0, ModemConfig.HEADER_BYTES)
         val restPlain = plaintext.copyOfRange(ModemConfig.HEADER_BYTES, plaintext.size)
 
-        val headerSymbols = bytesToSymbols(FecCodec.encode(headerPlain))
+        val headerSymbols = bytesToSymbols(encodeBlock(headerPlain))
         check(headerSymbols.size == HEADER_SYMBOL_COUNT)
-        val restSymbols = bytesToSymbols(FecCodec.encode(restPlain))
+        val restSymbols = bytesToSymbols(encodeBlock(restPlain))
 
-        val syncChirp = ChirpSync.generateSyncChirp(sampleRate)
-        val endChirp = ChirpSync.generateEndChirp(sampleRate)
-        val body = synthesizeSymbols(headerSymbols + restSymbols, sampleRate, symbolRateHz)
+        val syncChirp = ChirpSync.generateSyncChirp(sampleRate, band)
+        val endChirp = ChirpSync.generateEndChirp(sampleRate, band)
+        val body = synthesizeSymbols(headerSymbols + restSymbols, sampleRate, symbolRateHz, band)
 
         return syncChirp + body + endChirp
     }
 
-    private fun synthesizeSymbols(symbols: IntArray, sampleRate: Int, symbolRateHz: Double): ShortArray {
+    private fun synthesizeSymbols(
+        symbols: IntArray,
+        sampleRate: Int,
+        symbolRateHz: Double,
+        band: AcousticBand,
+    ): ShortArray {
         val samplesPerSymbol = (sampleRate / symbolRateHz).toInt()
         val fadeSamples = (sampleRate * ModemConfig.SYMBOL_FADE_MS / 1000.0).toInt().coerceAtMost(samplesPerSymbol / 2)
         val out = ShortArray(symbols.size * samplesPerSymbol)
 
         for (s in symbols.indices) {
-            val freq = ModemConfig.toneFrequencyHz(symbols[s])
+            val freq = band.toneFrequencyHz(symbols[s])
             val base = s * samplesPerSymbol
             for (i in 0 until samplesPerSymbol) {
                 val t = i / sampleRate.toDouble()

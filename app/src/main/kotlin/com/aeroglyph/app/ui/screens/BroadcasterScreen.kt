@@ -148,10 +148,7 @@ fun BroadcasterScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 DataLabel("SPECTRUM · ${ModemConfig.TONE_COUNT} BINS")
                 Spacer(Modifier.weight(1f))
-                DataValue(
-                    "${(ModemConfig.LOW_TONE_HZ / 1000).toInt()}–${ModemConfig.HIGH_TONE_HZ / 1000}kHz",
-                    color = extras.textTertiary,
-                )
+                DataValue(settings.roomProfile.band.spanLabel, color = extras.textTertiary)
             }
             Spacer(Modifier.height(14.dp))
             SpectrumVisualizer(
@@ -257,11 +254,27 @@ fun BroadcasterScreen(
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                text = "${settings.roomProfile.symbolRateHz.toInt()} symbols/sec · " +
+                text = "${settings.roomProfile.rangeLabel} · ${settings.roomProfile.band.spanLabel} · " +
+                    "${settings.roomProfile.symbolRateHz.toInt()} symbols/sec · " +
                     "${settings.roomProfile.repeatCount}× repetition",
                 style = DataType.small,
                 color = extras.textTertiary,
             )
+            // The long-range profile trades away the thing most people assume
+            // is permanent about this app, so say so plainly rather than
+            // letting a demo be surprised by a room full of whistling phones.
+            AnimatedVisibility(visible = settings.roomProfile.band.audible) {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Long range drops the carrier to ${settings.roomProfile.band.spanLabel}, " +
+                            "where air absorbs far less of the signal and phone speakers are much stronger. " +
+                            "That is what buys the distance — and it means this mode is audible.",
+                        style = DataType.small,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             Spacer(Modifier.height(6.dp))
             ToggleRow(
@@ -345,7 +358,7 @@ private fun TransmitProgress(progress: Float) {
 private fun estimateSeconds(byteLength: Int, profile: RoomProfile): Int {
     val symbols = (ModemConfig.HEADER_BYTES + byteLength + ModemConfig.CRC_BYTES) * 4
     val bodySeconds = symbols / profile.symbolRateHz
-    val chirpSeconds = 2 * ModemConfig.CHIRP_DURATION_MS / 1000.0
+    val chirpSeconds = 2 * profile.band.chirpDurationMs / 1000.0
     val one = bodySeconds + chirpSeconds
     val total = one * profile.repeatCount + (profile.repeatCount - 1) * (ModemConfig.REPEAT_GAP_MS / 1000.0)
     return total.toInt().coerceAtLeast(1)

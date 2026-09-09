@@ -12,6 +12,7 @@ import com.aeroglyph.app.audio.DecodeResult
 import com.aeroglyph.app.audio.Frame
 import com.aeroglyph.app.audio.FrameType
 import com.aeroglyph.app.audio.ModemConfig
+import com.aeroglyph.app.audio.AcousticBand
 import com.aeroglyph.app.audio.RoomProfile
 import com.aeroglyph.app.playback.Feedback
 import com.aeroglyph.app.playback.ListenState
@@ -121,13 +122,19 @@ class AeroglyphViewModel(app: Application) : AndroidViewModel(app) {
         transmitter.isTransmitting,
         transmitter.outgoingChunk,
         listener.binEnergies,
-    ) { transmitting, outgoing, incoming ->
+        _settings,
+    ) { transmitting, outgoing, incoming, settings ->
         if (transmitting && outgoing.isNotEmpty()) {
-            AudioDecoder.binEnergies(outgoing, 0, outgoing.size)
+            // Measure the outgoing audio in the band we are actually sending
+            // in, or a long-range broadcast would render as sixteen empty bars.
+            AudioDecoder.binEnergies(outgoing, 0, outgoing.size, band = settings.roomProfile.band)
         } else {
             incoming
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, DoubleArray(ModemConfig.TONE_COUNT))
+
+    /** The band the receiver last locked onto, so the UI can name what it heard. */
+    val activeBand: StateFlow<AcousticBand> = listener.activeBand
 
     private var activeBroadcastSessionId: Int? = null
     private var relayJob: Job? = null
@@ -243,6 +250,7 @@ class AeroglyphViewModel(app: Application) : AndroidViewModel(app) {
                 frame = frame,
                 symbolRateHz = profile.symbolRateHz,
                 repeatCount = repeatCount,
+                band = profile.band,
             )
         } finally {
             listener.muted = false

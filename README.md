@@ -76,7 +76,7 @@ On Windows use `gradlew.bat`. If `./gradlew test` complains about the JDK, point
 ./gradlew test -Dorg.gradle.java.home="C:\Program Files\Android\Android Studio\jbr"
 ```
 
-> **Verified.** Built and tested on a real toolchain (JDK 17, Android SDK Platform 35): `./gradlew test` passes all 24 JVM unit tests and `./gradlew assembleDebug` produces an installable APK. What is *not* yet verified is on-device radio behaviour -- the multi-device demos below, real microphone and speaker response at 17-19.5kHz, and how far the range actually stretches in a given room.
+> **Verified.** Built and tested on a real toolchain (JDK 17, Android SDK Platform 35): `./gradlew test` passes all 33 JVM unit tests and `./gradlew assembleDebug` produces an installable APK. What is *not* yet verified is on-device acoustic behaviour -- the multi-device demos below, real microphone and speaker response in either band, and how far the range actually stretches in a given room. The ~25 m figure is derived from air-absorption and transducer-response figures, not measured on hardware.
 
 ---
 
@@ -126,6 +126,7 @@ If C is out of earshot of everyone at the moment it asks, it stays quiet and wai
 - **Repetition** — start a broadcast, kill and reopen the receiver app mid-transmission. It catches a later repetition (frames repeat 4× by default).
 - **Noise** — play music or talk over the transmission. Corrupted frames fail CRC and are dropped silently; a garbled message is never displayed. A later clean repetition still gets through.
 - **Room profiles** — Broadcaster → *Advanced* → **Noisy** drops to 30 symbols/sec with 6 repetitions. Slower and more redundant; use it in a loud room.
+- **Long range (~25 m)** — Broadcaster → *Advanced* → **Long range**. Moves the carrier to 10–14.5 kHz and slows to 15 symbols/sec. **This mode is audible.** Receivers need no configuration at all — they work out the band from the chirp — so you can leave every other phone exactly as it is and just change the sender.
 - **Confirmation mode** — turn it on and watch `DEVICES CONFIRMED` count unique acoustic ACKs.
 - **Interruptions** — call the phone mid-broadcast. Audio focus is released and the transmission stops cleanly rather than half-sending a frame.
 
@@ -138,7 +139,11 @@ Text ─► UTF-8 ─► [len | session | type+TTL]  +  payload  +  CRC-32
                           │                        │
                           └── Hamming(8,4) SECDED ─┘
                                      │
-                          4 bits/symbol ─► 16-FSK tones (17–19.5 kHz)
+                          bit interleave (1 symbol error ─► 1 bit/codeword)
+                                     │
+                          4 bits/symbol ─► 16-FSK tones
+                                            17–19.5 kHz silent, or
+                                            10–14.5 kHz for ~25 m
                                      │
               [sync chirp] ─► [header block] ─► [payload block] ─► [end chirp]
                                      │
@@ -196,12 +201,17 @@ All taken under the brief's own tie-breaker — *when a constraint and a nice-to
 
 6. **Room profiles auto-negotiate.** Nothing on the wire announces which symbol rate the sender used, so a receiver set to a different profile would decode nothing with no indication why. The receiver now tries each profile's rate against the 12-symbol header and keeps whichever one its FEC agrees with -- no handshake, which the brief forbids, just three cheap attempts.
 
+7. **The FEC is bit-interleaved before modulation.** This one was a genuine bug, not a judgement call. `FecCodec` emits one 8-bit SECDED codeword per nibble and the modulator takes 4 bits per symbol, so both halves of a codeword travelled as two *adjacent* symbols. But the error unit on an FSK channel is the symbol: when the Goertzel argmax picks the wrong tone, all four of that symbol's bits are wrong at once -- four bad bits in one codeword, far past what single-error correction can repair. Since one failed codeword fails its whole block, **a single wrong symbol discarded the entire message**, which is exactly the wrong failure curve for a long link where the realistic condition is "nearly all symbols are fine, a handful are not". A block transpose spreads each codeword's bits across eight symbols, so one bad symbol now deposits one correctable bit into each of four codewords and the frame survives. Costs nothing: same bits, same symbols, same airtime. `LongRangeTest` pins both the fix and the old behaviour it replaced.
+
+8. **A second, audible carrier band for long range.** 25 m is not reachable at 17–19.5 kHz by tuning anything: air absorbs ~0.8–1 dB per metre up there (20–25 dB over 25 m, on top of ~14 dB of spreading loss from 5 m), and phone transducers are another 20–30 dB down at 19 kHz. That gap is 35–40 dB and the only place it exists is the carrier frequency. The **Long range** profile moves to 10–14.5 kHz, where absorption falls to ~0.3 dB/m and speakers are far stronger, and slows symbols 3× for another ~5 dB of integration gain. The ultrasonic band is untouched and still the default, because silence is a real feature — this is a mode, not a replacement. Bands are told apart purely by their (disjoint) sync chirps, so the receiver discovers the band rather than being configured.
+
 ---
 
 ## Known limitations
 
-- **Near-ultrasonic, not ultrasonic.** True >20 kHz is unreliable across cheap phone speakers and mics, so the band is 17–19.5 kHz. Most adults won't notice it; some people (and most dogs) will.
-- **Range and noise.** Reliability degrades with distance, ambient noise, and obstructions. FEC and repetition mitigate this; they don't eliminate it. Echo Relay is the answer to range, not raw transmit power.
+- **Near-ultrasonic, not ultrasonic.** True >20 kHz is unreliable across cheap phone speakers and mics, so the default band is 17–19.5 kHz. Most adults won't notice it; some people (and most dogs) will.
+- **Range costs silence.** The ~25 m figure applies to the **Long range** profile only, and that profile is audible — a thin high warble for the duration of the transmission. The silent band remains a room-sized channel (~5–8 m), and no threshold tuning changes that; the limit is air absorption and speaker response, not software.
+- **Range and noise.** Reliability degrades with distance, ambient noise, and obstructions. FEC, interleaving and repetition mitigate this; they don't eliminate it. Echo Relay extends coverage past any single device's reach.
 - **ACK confirmation is best-effort.** If many devices ACK at once their bursts overlap and some are lost, so the tally can read low in a busy room. Each receiver's own glyph is the authoritative confirmation — the app says so in-app rather than hiding it.
 - **8-bit session IDs.** 256 values, tracked in memory, capped at 128 entries. Fine for a demo; a long-lived deployment would want wider IDs with time-based expiry.
 - **Session state is in-memory only.** The signal log and dedupe set are cleared when the app dies. This is deliberate — Aeroglyph writes no audio and no message content to disk, ever.

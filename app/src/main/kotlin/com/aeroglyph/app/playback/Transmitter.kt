@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Build
+import com.aeroglyph.app.audio.AcousticBand
 import com.aeroglyph.app.audio.AudioEncoder
 import com.aeroglyph.app.audio.Frame
 import com.aeroglyph.app.audio.ModemConfig
@@ -54,8 +55,9 @@ class Transmitter(context: Context) {
         frame: Frame,
         symbolRateHz: Double = ModemConfig.DEFAULT_SYMBOL_RATE_HZ,
         repeatCount: Int = ModemConfig.DEFAULT_REPEAT_COUNT,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): Unit = withContext(Dispatchers.IO) {
-        val pcm = AudioEncoder.synthesize(frame, symbolRateHz = symbolRateHz)
+        val pcm = AudioEncoder.synthesize(frame, symbolRateHz = symbolRateHz, band = band)
         cancelRequested = false
 
         if (!requestFocus()) return@withContext

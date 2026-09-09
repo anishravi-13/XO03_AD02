@@ -14,17 +14,26 @@ data class ChirpDetection(val offsetSamples: Int, val score: Double)
  * sweep has a very distinctive, low-ambiguity cross-correlation peak against
  * steady-state room noise or music -- exactly what we need to reliably find
  * "a transmission is starting" before we've locked onto the symbol clock.
+ *
+ * Each [AcousticBand] sweeps its own disjoint frequency range, so the chirp
+ * doubles as the band announcement: whichever template correlates best tells
+ * the receiver which band the rest of the frame is in. That keeps the receiver
+ * configuration-free -- only the sender picks a profile.
  */
 object ChirpSync {
 
-    fun generateSyncChirp(sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ): ShortArray =
-        generateChirp(ModemConfig.SYNC_CHIRP_START_HZ, ModemConfig.SYNC_CHIRP_END_HZ, sampleRate)
+    fun generateSyncChirp(
+        sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
+    ): ShortArray = generateChirp(band.chirpLowHz, band.chirpHighHz, band.chirpDurationMs, sampleRate)
 
-    fun generateEndChirp(sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ): ShortArray =
-        generateChirp(ModemConfig.END_CHIRP_START_HZ, ModemConfig.END_CHIRP_END_HZ, sampleRate)
+    fun generateEndChirp(
+        sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
+        band: AcousticBand = ModemConfig.DEFAULT_BAND,
+    ): ShortArray = generateChirp(band.chirpHighHz, band.chirpLowHz, band.chirpDurationMs, sampleRate)
 
-    private fun generateChirp(startHz: Double, endHz: Double, sampleRate: Int): ShortArray {
-        val n = (sampleRate * ModemConfig.CHIRP_DURATION_MS / 1000.0).toInt()
+    private fun generateChirp(startHz: Double, endHz: Double, durationMs: Double, sampleRate: Int): ShortArray {
+        val n = (sampleRate * durationMs / 1000.0).toInt()
         val durationSec = n / sampleRate.toDouble()
         val rateHzPerSec = (endHz - startHz) / durationSec
         val fadeSamples = (sampleRate * ModemConfig.SYMBOL_FADE_MS / 1000.0).toInt()
@@ -51,16 +60,16 @@ object ChirpSync {
      * there's no cheap way to skip-scan for it -- every offset in the search
      * range must be checked. Scanning an entire multi-second recording at
      * that resolution is not real-time-tractable, and it's also the wrong
-     * job for this function: [Listener] is expected to keep feeding this a
-     * short rolling window of *recent* audio, so a not-yet-consumed chirp is
-     * always near the front of whatever buffer it hands over. The default
-     * (3 template lengths) comfortably covers that case with margin for
-     * buffering jitter.
+     * job for this function: [com.aeroglyph.app.playback.Listener] is expected
+     * to keep feeding this a short rolling window of *recent* audio, so a
+     * not-yet-consumed chirp is always near the front of whatever buffer it
+     * hands over. The default (3 template lengths) comfortably covers that
+     * case with margin for buffering jitter.
      *
      * [searchStride] trades alignment precision for speed by checking every
      * Nth offset. Landing a few samples off the true peak is harmless here:
-     * each symbol window is ~1000 samples wide, so a handful of samples of
-     * misalignment is a fraction of a percent of one symbol. Tests use
+     * each symbol window is thousands of samples wide, so a handful of samples
+     * of misalignment is a fraction of a percent of one symbol. Tests use
      * stride 1; the live listener uses a coarser stride to stay real-time.
      */
     fun findChirp(

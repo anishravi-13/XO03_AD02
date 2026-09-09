@@ -32,6 +32,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.aeroglyph.app.audio.AcousticBand
 import com.aeroglyph.app.audio.ModemConfig
 import com.aeroglyph.app.ui.components.AeroIcon
 import com.aeroglyph.app.ui.components.DataLabel
@@ -98,7 +99,13 @@ fun ModeSelectScreen(
 
             Spacer(Modifier.height(28.dp))
             Row {
-                BandStat("BAND", "${(ModemConfig.LOW_TONE_HZ / 1000).toInt()}–${ModemConfig.HIGH_TONE_HZ / 1000} kHz")
+                // The receiver watches every band at once, so quote the whole
+                // span it listens across rather than just the default one.
+                BandStat(
+                    "BAND",
+                    "${(AcousticBand.entries.minOf { it.lowToneHz } / 1000).toInt()}–" +
+                        "${AcousticBand.entries.maxOf { it.highToneHz } / 1000} kHz",
+                )
                 Spacer(Modifier.width(28.dp))
                 BandStat("TONES", "${ModemConfig.TONE_COUNT}-FSK")
                 Spacer(Modifier.width(28.dp))
