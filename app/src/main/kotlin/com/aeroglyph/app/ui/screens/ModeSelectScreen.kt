@@ -48,6 +48,7 @@ fun ModeSelectScreen(
     onChooseBroadcaster: () -> Unit,
     onChooseReceiver: () -> Unit,
     onOpenLog: () -> Unit,
+    onOpenAccount: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val extras = LocalAeroglyphExtras.current
@@ -80,6 +81,14 @@ fun ModeSelectScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Wordmark()
                 Spacer(Modifier.weight(1f))
+                Box(
+                    Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onOpenAccount)
+                        .padding(10.dp),
+                ) {
+                    AeroIcon(Glyphs.user, "Account", tint = extras.textTertiary)
+                }
                 Box(
                     Modifier
                         .clip(CircleShape)

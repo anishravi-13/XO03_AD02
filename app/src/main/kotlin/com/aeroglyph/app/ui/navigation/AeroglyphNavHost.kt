@@ -32,11 +32,14 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.aeroglyph.app.cloud.AccountState
 import com.aeroglyph.app.ui.AeroglyphViewModel
 import com.aeroglyph.app.ui.components.AeroIcon
 import com.aeroglyph.app.ui.components.Glyphs
 import com.aeroglyph.app.ui.components.MicPermissionGate
 import com.aeroglyph.app.ui.components.WarningBanner
+import com.aeroglyph.app.ui.screens.AccountScreen
+import com.aeroglyph.app.ui.screens.AdminScreen
 import com.aeroglyph.app.ui.screens.BroadcasterScreen
 import com.aeroglyph.app.ui.screens.ModeSelectScreen
 import com.aeroglyph.app.ui.screens.ReceiverScreen
@@ -44,7 +47,7 @@ import com.aeroglyph.app.ui.screens.SignalLogScreen
 import com.aeroglyph.app.ui.theme.LocalAeroglyphExtras
 import kotlinx.coroutines.delay
 
-enum class Screen { MODE_SELECT, BROADCASTER, RECEIVER, SIGNAL_LOG }
+enum class Screen { MODE_SELECT, BROADCASTER, RECEIVER, SIGNAL_LOG, ACCOUNT, ADMIN }
 
 @Composable
 fun AeroglyphRoot(
@@ -79,6 +82,10 @@ fun AeroglyphRoot(
     val logEntries by viewModel.signalLog.entries.collectAsState()
     val attempts by viewModel.signalLog.decodeAttempts.collectAsState()
     val successes by viewModel.signalLog.decodeSuccesses.collectAsState()
+    val accountState by viewModel.accountState.collectAsState()
+    val accountBusy by viewModel.accountBusy.collectAsState()
+    val accountError by viewModel.accountError.collectAsState()
+    val adminUsers by viewModel.adminUsers.collectAsState()
 
     // The broadcaster listens too -- it needs the mic for ACKs and to notice
     // relay traffic -- so listening is tied to permission, not to mode.
@@ -126,6 +133,7 @@ fun AeroglyphRoot(
                 onChooseBroadcaster = { screen = Screen.BROADCASTER },
                 onChooseReceiver = { screen = Screen.RECEIVER },
                 onOpenLog = { screen = Screen.SIGNAL_LOG },
+                onOpenAccount = { screen = Screen.ACCOUNT },
             )
 
             Screen.BROADCASTER -> Scaffolded(
@@ -186,6 +194,38 @@ fun AeroglyphRoot(
                     attempts = attempts,
                     successes = successes,
                     onClear = viewModel::resetSession,
+                )
+            }
+
+            Screen.ACCOUNT -> Scaffolded(
+                onBack = { screen = Screen.MODE_SELECT },
+                onOpenLog = null,
+            ) {
+                AccountScreen(
+                    state = accountState,
+                    busy = accountBusy,
+                    error = accountError,
+                    onSignIn = viewModel::signIn,
+                    onSignUp = viewModel::signUp,
+                    onSignOut = viewModel::signOut,
+                    onDismissError = viewModel::clearAccountError,
+                    onOpenAdmin = { screen = Screen.ADMIN },
+                )
+            }
+
+            Screen.ADMIN -> Scaffolded(
+                onBack = { screen = Screen.ACCOUNT },
+                onOpenLog = null,
+            ) {
+                LaunchedEffect(Unit) { viewModel.loadUsers() }
+                AdminScreen(
+                    users = adminUsers,
+                    currentUserId = (accountState as? AccountState.SignedIn)?.profile?.id.orEmpty(),
+                    busy = accountBusy,
+                    error = accountError,
+                    onSetRole = viewModel::setUserRole,
+                    onSetDisabled = viewModel::setUserDisabled,
+                    onDismissError = viewModel::clearAccountError,
                 )
             }
         }

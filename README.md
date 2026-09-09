@@ -213,6 +213,76 @@ All taken under the brief's own tie-breaker — *when a constraint and a nice-to
 
 ---
 
+## Optional accounts and cloud history (Supabase)
+
+**Signing in is entirely optional and never gates anything acoustic.** Broadcasting, listening, relaying, repair and catch-up all work signed out, offline, and in a build with no Supabase project configured at all. That is not an oversight — this app exists for rooms with no network, so a login wall would break it in exactly the conditions it is built for. What an account adds is durable message history and, for admins, user management.
+
+Implemented directly against Supabase's REST API with `HttpURLConnection` and `org.json` — **no new dependencies**. Every call is a plain POST/GET/PATCH with two headers; pulling a large SDK into an APK whose selling point is needing no infrastructure would be perverse.
+
+### Setup
+
+1. Create a Supabase project, then add to `local.properties` (gitignored — no key is ever committed):
+
+```properties
+supabase.url=https://<your-project>.supabase.co
+supabase.anonKey=<your anon/public key>
+```
+
+2. Run this in the Supabase SQL editor:
+
+```sql
+create table public.profiles (
+  id uuid primary key references auth.users on delete cascade,
+  email text not null,
+  role text not null default 'user' check (role in ('user','admin')),
+  disabled boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table public.messages (
+  id bigserial primary key,
+  user_id uuid not null references auth.users on delete cascade,
+  direction text not null,
+  body text not null,
+  acoustic_session int,
+  hop_count int,
+  created_at timestamptz not null default now()
+);
+
+alter table public.profiles enable row level security;
+alter table public.messages enable row level security;
+
+-- Avoids infinite recursion: a policy on profiles cannot itself query profiles.
+create function public.is_admin() returns boolean
+  language sql security definer stable set search_path = public as
+$$ select exists (select 1 from public.profiles where id = auth.uid() and role = 'admin') $$;
+
+create policy "read own profile, admins read all" on public.profiles
+  for select using (id = auth.uid() or public.is_admin());
+create policy "insert own profile" on public.profiles
+  for insert with check (id = auth.uid());
+create policy "only admins change profiles" on public.profiles
+  for update using (public.is_admin()) with check (public.is_admin());
+
+create policy "own messages" on public.messages
+  for select using (user_id = auth.uid() or public.is_admin());
+create policy "insert own messages" on public.messages
+  for insert with check (user_id = auth.uid());
+```
+
+3. Sign up in the app, then promote yourself once from the SQL editor:
+   `update public.profiles set role = 'admin' where email = 'you@example.com';`
+
+### Notes on the design
+
+- **Roles live in a table, not the JWT**, so an admin can promote or disable someone without them re-authenticating.
+- **Authorisation is enforced by row-level security, not by the app.** The admin buttons are hidden from non-admins for tidiness only; a non-admin who reaches the screen gets their own row back and their writes are refused. A client that decides who may do what is not a permission system — anyone can edit a client.
+- **No service key ships in the app.** That is why the user list reads `profiles` rather than `auth.users`: a service key in an APK can be extracted by anyone who downloads it.
+- **You cannot change your own role or disable yourself** from the admin screen, since that can leave a deployment with nobody able to administer it and no route back from inside the app.
+- **Sync is fire-and-forget and bounded.** Messages recorded while offline or signed out are queued (capped at 200) and flushed on the next successful sign-in. A failed log write can never disturb a transmission in progress.
+
+---
+
 ## Known limitations
 
 - **Near-ultrasonic, not ultrasonic.** True >20 kHz is unreliable across cheap phone speakers and mics, so the default band is 17–19.5 kHz. Most adults won't notice it; some people (and most dogs) will.

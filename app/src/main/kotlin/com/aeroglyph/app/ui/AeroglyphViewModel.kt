@@ -14,6 +14,9 @@ import com.aeroglyph.app.audio.FrameType
 import com.aeroglyph.app.audio.ModemConfig
 import com.aeroglyph.app.audio.AcousticBand
 import com.aeroglyph.app.audio.RoomProfile
+import com.aeroglyph.app.cloud.AccountRepository
+import com.aeroglyph.app.cloud.AccountState
+import com.aeroglyph.app.cloud.UserProfile
 import com.aeroglyph.app.playback.Feedback
 import com.aeroglyph.app.playback.ListenState
 import com.aeroglyph.app.playback.Listener
@@ -66,6 +69,19 @@ class AeroglyphViewModel(app: Application) : AndroidViewModel(app) {
     private val listener = Listener()
     private val sessionManager = SessionManager()
     private val messageStore = MessageStore()
+
+    /**
+     * Optional cloud account. Nothing on the acoustic path waits on this or
+     * checks it -- sync is fire-and-forget and a signed-out or offline device
+     * behaves identically to a signed-in one.
+     */
+    val account = AccountRepository(app)
+    val accountState: StateFlow<AccountState> = account.state
+    val accountBusy: StateFlow<Boolean> = account.busy
+    val accountError: StateFlow<String?> = account.error
+
+    private val _adminUsers = MutableStateFlow<List<UserProfile>>(emptyList())
+    val adminUsers: StateFlow<List<UserProfile>> = _adminUsers.asStateFlow()
     val signalLog = SignalLog()
     private val feedback = Feedback(app)
 
@@ -146,6 +162,37 @@ class AeroglyphViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             listener.events.collect { handleDecode(it) }
         }
+        viewModelScope.launch { account.restore() }
+    }
+
+    // ── Account (all optional; never gates the acoustic path) ────────────────
+
+    fun signIn(email: String, password: String) = viewModelScope.launch { account.signIn(email, password) }
+
+    fun signUp(email: String, password: String) = viewModelScope.launch { account.signUp(email, password) }
+
+    fun signOut() {
+        account.signOut()
+        _adminUsers.value = emptyList()
+    }
+
+    fun clearAccountError() = account.clearError()
+
+    fun loadUsers() = viewModelScope.launch {
+        account.allUsers().onSuccess { _adminUsers.value = it }
+    }
+
+    fun setUserRole(user: UserProfile, role: String) = viewModelScope.launch {
+        account.setRole(user.id, role).onSuccess { loadUsers() }
+    }
+
+    fun setUserDisabled(user: UserProfile, disabled: Boolean) = viewModelScope.launch {
+        account.setDisabled(user.id, disabled).onSuccess { loadUsers() }
+    }
+
+    /** Mirrors one acoustic event to the cloud when signed in. Failures are queued, never surfaced. */
+    private fun syncMessage(direction: String, body: String, sessionId: Int, hopCount: Int) {
+        viewModelScope.launch { account.recordMessage(direction, body, sessionId, hopCount) }
     }
 
     // ── Settings ─────────────────────────────────────────────────────────────
@@ -238,6 +285,7 @@ class AeroglyphViewModel(app: Application) : AndroidViewModel(app) {
 
         viewModelScope.launch {
             signalLog.add(LogDirection.SENT, message, sessionId, FrameType.DATA, frame.hopCount)
+            syncMessage("sent", message, sessionId, frame.hopCount)
             transmitFrame(frame, settings.roomProfile)
         }
     }
@@ -317,6 +365,7 @@ class AeroglyphViewModel(app: Application) : AndroidViewModel(app) {
             hopCount = result.hopCount,
             receivedAtMs = System.currentTimeMillis(),
         )
+        syncMessage("received", result.message, result.sessionId, result.hopCount)
         signalLog.add(
             direction = when (result.frameType) {
                 FrameType.RELAY -> LogDirection.RELAYED
