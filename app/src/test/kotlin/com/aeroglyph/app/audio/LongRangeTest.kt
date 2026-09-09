@@ -5,6 +5,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.PI
+import kotlin.math.sin
 import kotlin.random.Random
 
 /**
@@ -183,6 +185,37 @@ class LongRangeTest {
                     scored.confidence < correct.confidence,
                 )
             }
+        }
+    }
+
+    /**
+     * Pins the in-band correlation fix at the level it operates on. Without it
+     * these same buffers scored 0.02-0.07 -- far below any usable threshold --
+     * purely because low-frequency room energy sat in the denominator of a
+     * normalised correlation.
+     */
+    @Test
+    fun `a weak chirp scores well despite dominant out-of-band rumble`() {
+        for (band in AcousticBand.entries) {
+            val profile = RoomProfile.entries.first { it.band == band }
+            val frame = Frame(sessionId = 9, frameType = FrameType.DATA, hopCount = 0, payload = "hi".toByteArray())
+            val clean = AudioEncoder.synthesize(frame, symbolRateHz = profile.symbolRateHz, band = band)
+
+            val rumble = 20_000
+            val noisy = ShortArray(clean.size) { i ->
+                var v = (clean[i] * 0.02).toInt()
+                v += (sin(2.0 * PI * 180.0 * i / ModemConfig.SAMPLE_RATE_HZ) * rumble).toInt()
+                v += (sin(2.0 * PI * 55.0 * i / ModemConfig.SAMPLE_RATE_HZ) * rumble * 0.7).toInt()
+                v.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+            }
+
+            val hit = AudioDecoder.findSyncChirp(noisy, searchStride = 4, maxSearchOffset = 4_000, band = band)
+            assertNotNull("$band: weak chirp lost under rumble", hit)
+            assertEquals("$band: chirp located at the wrong offset", 0, hit!!.offsetSamples)
+            assertTrue(
+                "$band: scored only ${hit.score}, too close to the accept threshold to be safe",
+                hit.score > AudioDecoder.DEFAULT_CHIRP_THRESHOLD * 1.5,
+            )
         }
     }
 

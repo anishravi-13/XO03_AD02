@@ -184,6 +184,14 @@ class FrameDetector(
             return
         }
         if (onsetAbs >= 0L) {
+            // Deliberately *not* re-anchored onto a later, stronger rise. That
+            // seems attractive -- a noise blip just before a transmission would
+            // otherwise own the onset -- but a chirp swells by more than a
+            // factor of two as its sweep enters the watched band, so it
+            // re-anchors onto the middle of itself, and by the time the level
+            // stops climbing the anchor has slid past the chirp start and out
+            // of pre-roll reach. Keeping false onsets rare (see TRIGGER_RATIO)
+            // is the better answer; a missed onset costs one repetition.
             tryLockOntoChirp()
             return
         }
@@ -431,11 +439,22 @@ class FrameDetector(
 
         /**
          * How far above its own measured background a band must rise to count
-         * as an onset. Low, because at range a genuine transmission arrives
-         * only slightly above the room; false onsets are absorbed by
-         * [FAILED_LOCK_COOLDOWN_SAMPLES].
+         * as an onset.
+         *
+         * This was dropped to 1.6 to catch faint transmissions, which turned
+         * out to be both wrong and harmful. The floor is an asymmetric EMA that
+         * rises slowly and falls fast, so it deliberately tracks something near
+         * the *minimum* rather than the mean -- which puts ordinary noise at
+         * roughly 1.5x the floor all by itself. A 1.6 trigger therefore fired
+         * more or less continuously, and since each false onset costs half a
+         * second of correlate-and-fail, the receiver spent nearly all its time
+         * blind and genuine chirps kept landing in the gaps.
+         *
+         * Sensitivity was never the right lever here: a distant transmission
+         * measures ~10x its band's floor once the correlation is done in-band,
+         * so 3.0 keeps weak signals comfortably while leaving noise alone.
          */
-        const val TRIGGER_RATIO = 1.6
+        const val TRIGGER_RATIO = 3.0
 
         /**
          * Backstop for a genuinely silent room, where a purely ratio-based

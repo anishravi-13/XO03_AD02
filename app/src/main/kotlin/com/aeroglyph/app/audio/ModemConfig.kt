@@ -84,6 +84,10 @@ enum class AcousticBand(
     fun chirpSamples(sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ): Int =
         (sampleRate * chirpDurationMs / 1000.0).toInt()
 
+    /** Centre and width of this band's chirp sweep -- the passband the detector filters to. */
+    val chirpCenterHz: Double get() = (chirpLowHz + chirpHighHz) / 2.0
+    val chirpBandwidthHz: Double get() = kotlin.math.abs(chirpHighHz - chirpLowHz)
+
     /** Human-readable span, e.g. "17.0-19.5 kHz". */
     val spanLabel: String
         get() = String.format("%.1f–%.1f kHz", lowToneHz / 1000.0, highToneHz / 1000.0)

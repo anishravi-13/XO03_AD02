@@ -64,6 +64,17 @@ sealed class DecodeResult {
  */
 object AudioDecoder {
 
+    /**
+     * Locates this band's sync chirp, correlating in the band's own passband.
+     *
+     * Both the window and the template are band-passed before correlation --
+     * see [DspUtil.bandPassNormalized] for why. Briefly: the score's denominator
+     * is the window's *total* energy, so low-frequency room noise that cannot
+     * possibly correlate with a chirp was still dominating it, and a distant
+     * transmission scored 0.02 instead of 1.00 purely because the room was a
+     * room. Filtering both sides identically keeps the matched filter matched
+     * and leaves only in-band energy in the denominator.
+     */
     fun findSyncChirp(
         buffer: ShortArray,
         sampleRate: Int = ModemConfig.SAMPLE_RATE_HZ,
@@ -72,12 +83,15 @@ object AudioDecoder {
         maxSearchOffset: Int = Int.MAX_VALUE,
         band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): ChirpDetection? = ChirpSync.findChirp(
-        buffer = buffer,
-        template = ChirpSync.generateSyncChirp(sampleRate, band),
+        buffer = bandLimit(buffer, sampleRate, band),
+        template = bandLimit(ChirpSync.generateSyncChirp(sampleRate, band), sampleRate, band),
         threshold = threshold,
         maxSearchOffset = maxSearchOffset,
         searchStride = searchStride,
     )
+
+    private fun bandLimit(samples: ShortArray, sampleRate: Int, band: AcousticBand): ShortArray =
+        DspUtil.bandPassNormalized(samples, sampleRate, band.chirpCenterHz, band.chirpBandwidthHz)
 
     /**
      * Correlates every band's template and keeps the strongest match.
@@ -246,17 +260,17 @@ object AudioDecoder {
         chirpSearchStride: Int = 1,
         band: AcousticBand = ModemConfig.DEFAULT_BAND,
     ): DecodeResult {
-        val template = ChirpSync.generateSyncChirp(sampleRate, band)
-        val detection = ChirpSync.findChirp(
+        val detection = findSyncChirp(
             buffer = buffer,
-            template = template,
+            sampleRate = sampleRate,
             threshold = chirpThreshold,
             searchStride = chirpSearchStride,
+            band = band,
         ) ?: return DecodeResult.Incomplete
 
         return decodeFromSymbolStart(
             buffer = buffer,
-            symbolStart = detection.offsetSamples + template.size,
+            symbolStart = detection.offsetSamples + band.chirpSamples(sampleRate),
             sampleRate = sampleRate,
             symbolRateHz = symbolRateHz,
             band = band,
@@ -336,18 +350,20 @@ object AudioDecoder {
     /**
      * Correlation score a candidate must beat to count as the sync chirp.
      *
-     * Lowered twice, for two different reasons. First from the original 0.6 to
-     * 0.45: a real room adds reverb and the mic's response across the sweep is
-     * not flat, so a genuine chirp scores 0.5-0.7 rather than near 1.0. Then to
-     * 0.28 for long range, where the direct path is weak relative to the
-     * reverberant tail and correlation scores fall further still.
+     * This was progressively lowered -- 0.6, then 0.45, then 0.28 -- chasing
+     * weak signals that were failing to detect. That was treating the symptom:
+     * the scores were low because room rumble dominated the normalisation
+     * denominator, not because the chirps were faint. With the correlation now
+     * done in-band (see [findSyncChirp]), a distant transmission buried in
+     * heavy room noise measures 0.62-0.73 rather than 0.02, so the threshold
+     * can go back up and reject far more noise.
      *
-     * The asymmetry justifies being generous: a false positive costs a few
-     * milliseconds of wasted Goertzel work and is thrown out by the header FEC
+     * The asymmetry still argues for generosity: a false positive costs a few
+     * milliseconds of wasted work and is thrown out by the header check
      * immediately afterwards, while a missed chirp means the message is never
      * seen at all.
      */
-    const val DEFAULT_CHIRP_THRESHOLD = 0.28
+    const val DEFAULT_CHIRP_THRESHOLD = 0.35
 
     /** Ceiling on one symbol's bin-dominance ratio, so a single clean symbol cannot carry an average. */
     private const val MAX_SYMBOL_MARGIN = 10.0

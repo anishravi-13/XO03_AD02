@@ -162,6 +162,34 @@ class FrameDetectorTest {
         assertTrue("weak frame not decoded: $results", results.messages().contains("far away"))
     }
 
+    /**
+     * The failure that made long range unusable in a real room.
+     *
+     * Chirp candidates are scored by *normalised* cross-correlation, whose
+     * denominator is the window's total energy at every frequency. A room's
+     * 50-500Hz content -- ventilation, traffic, voices, footsteps -- runs tens
+     * of dB above anything in the carrier bands and cannot correlate with a
+     * chirp, but it was still dominating that denominator: a distant frame
+     * scored 0.02 where it scored 1.00 in silence. Detection was limited by the
+     * room being a room, not by the signal.
+     */
+    @Test
+    fun `a distant frame decodes through heavy low-frequency room noise`() {
+        for (profile in listOf(RoomProfile.NORMAL, RoomProfile.LONG_RANGE)) {
+            val results = run(
+                synthesize("through the rumble", profile),
+                gain = 0.03,
+                noiseAmp = 250,
+                interferenceHz = 180.0,
+                interferenceAmp = 15_000,
+            )
+            assertTrue(
+                "${profile.label} lost a weak frame to out-of-band rumble: $results",
+                results.messages().contains("through the rumble"),
+            )
+        }
+    }
+
     @Test
     fun `a frame arriving mid-chunk still decodes`() {
         // The gate only fires on chunk boundaries, so a chirp beginning part
